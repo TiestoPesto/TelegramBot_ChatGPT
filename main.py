@@ -3,8 +3,10 @@ from aiogram import Bot, types, Dispatcher, executor
 import config
 import logging
 import time
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 import os
+
+load_dotenv(find_dotenv())
 
 # Установка ключа API OpenAI
 client = OpenAI(api_key=os.getenv('OPENAI_TOKEN'))

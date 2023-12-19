@@ -5,7 +5,9 @@ import config
 import logging
 import time
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
 
 # Установка ключа API OpenAI
 client = OpenAI(api_key=os.getenv('OPENAI_TOKEN'))
