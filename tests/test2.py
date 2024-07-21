@@ -1,45 +1,41 @@
-'''Тут используется аудио модель Чата GPT которая снимает плату
-за распознавание аудио'''
 import asyncio
-from openai import AsyncOpenAI
+import uuid
+from openai import OpenAI
 from aiogram import Bot, types, Dispatcher, executor
+from aiogram.types import ContentType
+import speech_recognition as sr
 import logging
 from dotenv import load_dotenv, find_dotenv
 import os
 from aiogram.types import ContentType, InlineKeyboardMarkup, InlineKeyboardButton
-import speech_recognition as sr
-import uuid
+
 
 load_dotenv(find_dotenv())
-language = 'ru_RU'
 
+language = 'ru_RU'
 API_TOKEN = os.getenv('TG_BOT_TOKEN')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME')
 
 # Установка ключа API OpenAI
-client = AsyncOpenAI(
-	# This is the default and can be omitted
-	api_key=os.environ.get("OPENAI_TOKEN"),
-)
+client = OpenAI(api_key=os.getenv('OPENAI_TOKEN'))
 
 # Создание объекта бота
 bot = Bot(token=os.getenv('TG_BOT_TOKEN'))
 dp = Dispatcher(bot)
-
-# Создания объекта обработки голоса
 r = sr.Recognizer()
 
 # Настройка уровня логирования
 logging.basicConfig(level=logging.INFO)
 
-# Создаем папку для сохранения голосовых сообщений
-os.makedirs('./voice', exist_ok=True)
-
 # установка хедеров
 headers = {
 	'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:94.0) Gecko/20100101 Firefox/94.0'
 }
+
+# Создаем папку, если ее нет
+os.makedirs('../voice', exist_ok=True)
+os.makedirs('../ready', exist_ok=True)
 
 
 # Обработчик старта бота и приветствия
@@ -91,72 +87,60 @@ async def send_start(message: types.Message):
 	await last_msg.edit_text(text)
 
 
-# Обработчик голосовых сообщений
+# Обработчик голосового сообщения
+async def recognise(filename):
+	with sr.AudioFile(filename) as source:
+		audio_text = r.listen(source)
+		try:
+			text = r.recognize_google(audio_text, language=language)
+			print('Перевод аудио в текст ...')
+			print(text)
+			return text
+		except Exception as e:
+			print(f'Извините..у нас ошибка: {e}')
+			return "Извините, скажите еще раз"
+
+
 @dp.message_handler(content_types=ContentType.VOICE)
-async def handle_voice(message: types.Message):
-	try:
-		# Получаем информацию о пользователе в канале
-		chat_member = await bot.get_chat_member(CHANNEL_ID, message.from_user.id)
-		# Проверяем, является ли пользователь подписчиком канала
-		if chat_member.is_chat_member():
-			filename = str(uuid.uuid4())
-			file_name_full = "./voice/" + filename + ".ogg"
-			file_name_full_converted = "./ready/" + filename + ".wav"
-			file_info = await bot.get_file(message.voice.file_id)
-			downloaded_file = await bot.download_file(file_info.file_path)
-			
-			# Используем метод read(), чтобы получить байты
-			downloaded_bytes = downloaded_file.read()
-			
-			with open(file_name_full, 'wb') as new_file:
-				new_file.write(downloaded_bytes)
-			
-			os.system("ffmpeg -i " + file_name_full + "  " + file_name_full_converted)
-			try:
-				
-				# Отправляем промежуточное сообщение ожидания
-				await bot.send_chat_action(message.chat.id, "typing")
-				last_msg = await message.answer(
-					"<code>Сообщение принято. Занимаемся распознаванием...</code>", parse_mode="HTML"
-				)
-				
-				# Отправляем запрос на распознавание голоса в OpenAI
-				with open(file_name_full_converted, 'rb') as wav_file:
-					
-					response_data = await client.audio.transcriptions.create(
-						model="whisper-1",
-						file=wav_file,
-						# response_format="text"
+async def voice_processing(message: types.Message):
+	filename = str(uuid.uuid4())
+	file_name_full = "./voice/" + filename + ".ogg"
+	file_name_full_converted = "./ready/" + filename + ".wav"
+	file_info = await bot.get_file(message.voice.file_id)
+	downloaded_file = await bot.download_file(file_info.file_path)
+	
+	# Используем метод read(), чтобы получить байты
+	downloaded_bytes = downloaded_file.read()
+	
+	with open(file_name_full, 'wb') as new_file:
+		new_file.write(downloaded_bytes)
+	
+	os.system("ffmpeg -i " + file_name_full + "  " + file_name_full_converted)
+	text = await recognise(file_name_full_converted)
+	
+	await bot.send_chat_action(message.chat.id, "typing")
+	last_msg = await message.answer(
+		f"<code>Сообщение принято:</code>\n\n{text}",
+		parse_mode="HTML",
+		reply_markup=InlineKeyboardMarkup(
+			inline_keyboard=[
+				[
+					InlineKeyboardButton(
+						text="Отправить",
+						callback_data=f"send_text:{text}"
 					)
-				
-				# Получаем транскрипт из ответа OpenAI
-				# transcription_data = response_data.json()
-				# transcript = transcription_data["data"]["text"]
-				print(response_data.text)
-				
-				# Отправляем транскрипт в чат
-				# await bot.send_message(message.chat.id, f"Текст: {response_data.text}")
-				await last_msg.edit_text(f"Текст:  {response_data.text}")
-			
-			except Exception as e:
-				logging.error(f"Ошибка в голосовом сообщении: {e}")
-				
-				# При необходимости, уведомляем пользователя о проблеме
-				await message.answer("Извините, произошла ошибка. Мы работаем над решением проблемы.")
-			
-			finally:
-				# Удаляем сохраненный файл
-				os.remove(file_name_full)
-				os.remove(file_name_full_converted)
-		else:
-			# Если пользователь не подписан, предлагаем подписаться
-			await message.answer("Для использования этой команды, подпишитесь на наш канал." + CHANNEL_USERNAME)
-	except Exception as e:
-		# Логируем ошибку
-		logging.error(f"An error occurred: {e}")
-		
-		# При необходимости, уведомляем пользователя о проблеме
-		await message.answer("Извините, произошла ошибка. Мы работаем над решением проблемы.")
+				]
+			]
+		)
+	)
+	
+	await asyncio.sleep(1)
+	
+	await last_msg.edit_text(text)
+	
+	os.remove(file_name_full)
+	os.remove(file_name_full_converted)
+
 
 # Обработчик всех сообщений
 @dp.message_handler()
@@ -175,7 +159,7 @@ async def handle_messages(message: types.Message):
 				"<code>Сообщение принято. Ждем ответа...</code>", parse_mode="HTML"
 			)
 			
-			chat_completion = await client.chat.completions.create(
+			chat_completion = client.chat.completions.create(
 				messages=[
 					{
 						"role": "user",
@@ -198,6 +182,13 @@ async def handle_messages(message: types.Message):
 		# При необходимости, уведомляем пользователя о проблеме
 		await message.answer("Извините, произошла ошибка. Мы работаем над решением проблемы.")
 
+
+# Обработчик callback-кнопки
+@dp.callback_query_handler(lambda c: c.data.startswith('send_text:'))
+async def process_callback_button(callback_query: types.CallbackQuery):
+	_, text = callback_query.data.split(':')
+	await bot.answer_callback_query(callback_query.id)
+	await bot.send_message(callback_query.from_user.id, f"Вы выбрали отправку текста:\n{text}")
 
 if __name__ == '__main__':
 	# Включение long polling

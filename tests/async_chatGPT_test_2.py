@@ -1,5 +1,4 @@
-'''Тут используется аудио модель Чата GPT которая снимает плату
-за распознавание аудио'''
+"""Для экономии средств в качестве аудиомодели распознавания используется библиотека Python"""
 import asyncio
 from openai import AsyncOpenAI
 from aiogram import Bot, types, Dispatcher, executor
@@ -19,7 +18,6 @@ CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME')
 
 # Установка ключа API OpenAI
 client = AsyncOpenAI(
-	# This is the default and can be omitted
 	api_key=os.environ.get("OPENAI_TOKEN"),
 )
 
@@ -33,13 +31,34 @@ r = sr.Recognizer()
 # Настройка уровня логирования
 logging.basicConfig(level=logging.INFO)
 
-# Создаем папку для сохранения голосовых сообщений
+# Создаем папку, если ее нет
 os.makedirs('./voice', exist_ok=True)
+os.makedirs('./ready', exist_ok=True)
 
 # установка хедеров
 headers = {
 	'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:94.0) Gecko/20100101 Firefox/94.0'
 }
+
+# Максимальное количество хранимых сообщений от пользователя
+MAX_MESSAGES_PER_USER = 5
+
+# Словарь для отслеживания контекста разговоров с пользователями
+user_contexts = {}
+
+# Обработка запроса к GPT
+async def send_to_openai(messages):
+	try:
+		response = await client.chat.completions.create(
+			messages=messages,
+			model="gpt-3.5-turbo",
+		)
+		
+		logging.info("OpenAI API Response: %s", response)
+		return response.choices[0].message.content
+	except Exception as e:
+		logging.error("OpenAI API Error: %s", e)
+		return "Извините, произошла ошибка. Мы работаем над решением проблемы. Пришлите Ваше сообщение еще раз"
 
 
 # Обработчик старта бота и приветствия
@@ -92,62 +111,67 @@ async def send_start(message: types.Message):
 
 
 # Обработчик голосовых сообщений
+async def recognise(filename):
+	with sr.AudioFile(filename) as source:
+		audio_text = r.listen(source)
+		try:
+			text = r.recognize_google(audio_text, language=language)
+			print('Перевод аудио в текст ...')
+			print(text)
+			return text
+		except Exception as e:
+			print(f'Извините..у нас ошибка: {e}')
+			return "Извините, скажите еще раз"
+
+
 @dp.message_handler(content_types=ContentType.VOICE)
 async def handle_voice(message: types.Message):
 	try:
+		
 		# Получаем информацию о пользователе в канале
 		chat_member = await bot.get_chat_member(CHANNEL_ID, message.from_user.id)
 		# Проверяем, является ли пользователь подписчиком канала
 		if chat_member.is_chat_member():
-			filename = str(uuid.uuid4())
-			file_name_full = "./voice/" + filename + ".ogg"
-			file_name_full_converted = "./ready/" + filename + ".wav"
-			file_info = await bot.get_file(message.voice.file_id)
-			downloaded_file = await bot.download_file(file_info.file_path)
-			
-			# Используем метод read(), чтобы получить байты
-			downloaded_bytes = downloaded_file.read()
-			
-			with open(file_name_full, 'wb') as new_file:
-				new_file.write(downloaded_bytes)
-			
-			os.system("ffmpeg -i " + file_name_full + "  " + file_name_full_converted)
 			try:
-				
-				# Отправляем промежуточное сообщение ожидания
 				await bot.send_chat_action(message.chat.id, "typing")
 				last_msg = await message.answer(
 					"<code>Сообщение принято. Занимаемся распознаванием...</code>", parse_mode="HTML"
 				)
+				filename = str(uuid.uuid4())
+				file_name_full = "./voice/" + filename + ".ogg"
+				file_name_full_converted = "./ready/" + filename + ".wav"
+				file_info = await bot.get_file(message.voice.file_id)
+				downloaded_file = await bot.download_file(file_info.file_path)
 				
-				# Отправляем запрос на распознавание голоса в OpenAI
-				with open(file_name_full_converted, 'rb') as wav_file:
-					
-					response_data = await client.audio.transcriptions.create(
-						model="whisper-1",
-						file=wav_file,
-						# response_format="text"
-					)
+				# Используем метод read(), чтобы получить байты
+				downloaded_bytes = downloaded_file.read()
 				
-				# Получаем транскрипт из ответа OpenAI
-				# transcription_data = response_data.json()
-				# transcript = transcription_data["data"]["text"]
-				print(response_data.text)
+				with open(file_name_full, 'wb') as new_file:
+					new_file.write(downloaded_bytes)
 				
-				# Отправляем транскрипт в чат
-				# await bot.send_message(message.chat.id, f"Текст: {response_data.text}")
-				await last_msg.edit_text(f"Текст:  {response_data.text}")
+				os.system("ffmpeg -i " + file_name_full + "  " + file_name_full_converted)
+				text = await recognise(file_name_full_converted)
+				
+				# await last_msg.edit_text(text)
+				
+				# Создаем клавиатуру
+				keyboard = InlineKeyboardMarkup()
+				# Добавляем кнопку "Отправить"
+				keyboard.add(InlineKeyboardButton("Отправить Говоруше?", callback_data="send_message"))
+				
+				# Отправляем сообщение с клавиатурой
+				# await message.answer(text=text, reply_markup=keyboard)
+				await last_msg.edit_text(text=text, reply_markup=keyboard)
+				
+				os.remove(file_name_full)
+				os.remove(file_name_full_converted)
 			
 			except Exception as e:
 				logging.error(f"Ошибка в голосовом сообщении: {e}")
 				
 				# При необходимости, уведомляем пользователя о проблеме
 				await message.answer("Извините, произошла ошибка. Мы работаем над решением проблемы.")
-			
-			finally:
-				# Удаляем сохраненный файл
-				os.remove(file_name_full)
-				os.remove(file_name_full_converted)
+		
 		else:
 			# Если пользователь не подписан, предлагаем подписаться
 			await message.answer("Для использования этой команды, подпишитесь на наш канал." + CHANNEL_USERNAME)
@@ -158,8 +182,9 @@ async def handle_voice(message: types.Message):
 		# При необходимости, уведомляем пользователя о проблеме
 		await message.answer("Извините, произошла ошибка. Мы работаем над решением проблемы.")
 
+
 # Обработчик всех сообщений
-@dp.message_handler()
+@dp.message_handler(content_types=types.ContentType.TEXT)
 async def handle_messages(message: types.Message):
 	try:
 		# Получаем информацию о пользователе в канале
@@ -167,27 +192,32 @@ async def handle_messages(message: types.Message):
 		# Проверяем, является ли пользователь подписчиком канала
 		if chat_member.is_chat_member():
 			# Выводим в консоль сообщение от пользователя
-			print(f"Сообщение от {message.from_user.username}: {message.text}")
+			logging.info(f"Сообщение от  {message.from_user.username}, {message.text}")
 			
 			# Отправляем промежуточное сообщение ожидания
 			await bot.send_chat_action(message.chat.id, "typing")
-			last_msg = await message.answer(
-				"<code>Сообщение принято. Ждем ответа...</code>", parse_mode="HTML"
-			)
+			last_msg = await message.answer("<code>Сообщение принято. Ждем ответа...</code>", parse_mode="HTML")
 			
-			chat_completion = await client.chat.completions.create(
-				messages=[
-					{
-						"role": "user",
-						"content": message.text,
-					}
-				],
-				model="gpt-3.5-turbo",
-			)
+			# Проверка, есть ли контекст для данного пользователя
+			user_id = message.from_user.id
+			if user_id not in user_contexts:
+				user_contexts[user_id] = []
+				
+			# Добавление сообщения от пользователя в контекст
+			user_contexts[user_id].append({'role': 'user', 'content': message.text})
 			
-			print(chat_completion.choices[0].message.content)
-			await last_msg.edit_text(chat_completion.choices[0].message.content)
-		# await message.answer(chat_completion.choices[0].message.content)
+			# Ограничение числа хранимых сообщений
+			if len(user_contexts[user_id]) > MAX_MESSAGES_PER_USER:
+				user_contexts[user_id].pop(0)  # Удаление старого сообщения из начала списка
+			
+			# Отправка контекста в OpenAI API
+			text = await send_to_openai(user_contexts[user_id])
+			
+			# Добавление сообщения от ассистента в контекст
+			user_contexts[user_id].append({'role': 'system', 'content': text})
+			
+			await last_msg.edit_text(text)
+			
 		else:
 			# Если пользователь не подписан, предлагаем подписаться
 			await message.answer("Для использования этой команды, подпишитесь на наш канал." + CHANNEL_USERNAME)
@@ -197,6 +227,55 @@ async def handle_messages(message: types.Message):
 		
 		# При необходимости, уведомляем пользователя о проблеме
 		await message.answer("Извините, произошла ошибка. Мы работаем над решением проблемы.")
+
+
+# Добавим обработчик для кнопки "Отправить"
+@dp.callback_query_handler(lambda callback_query: callback_query.data == "send_message")
+async def send_message(callback_query: types.CallbackQuery):
+	try:
+		# Получаем информацию о пользователе в канале
+		chat_member = await bot.get_chat_member(CHANNEL_ID, callback_query.from_user.id)
+		# Проверяем, является ли пользователь подписчиком канала
+		if chat_member.is_chat_member():
+			# Выводим в консоль сообщение от пользователя
+			logging.info(f"Сообщение от  {callback_query.from_user.username}, {callback_query.message.text}")
+			
+			# Отправляем промежуточное сообщение ожидания
+			await bot.send_chat_action(callback_query.message.chat.id, "typing")
+			last_msg = await callback_query.message.answer(
+				"Сообщение принято. Ждем ответа от Говоруши...",
+			)
+			
+			# Проверка, есть ли контекст для данного пользователя
+			user_id = callback_query.from_user.id
+			if user_id not in user_contexts:
+				user_contexts[user_id] = []
+				
+			# Добавление сообщения от пользователя в контекст
+			user_contexts[user_id].append({'role': 'user', 'content': callback_query.message.text})
+			
+			# Ограничение числа хранимых сообщений
+			if len(user_contexts[user_id]) > MAX_MESSAGES_PER_USER:
+				user_contexts[user_id].pop(0)  # Удаление старого сообщения из начала списка
+			
+			# Отправка контекста в OpenAI API
+			text = await send_to_openai(user_contexts[user_id])
+			
+			# Добавление сообщения от ассистента в контекст
+			user_contexts[user_id].append({'role': 'system', 'content': text})
+			
+			await last_msg.edit_text(text)
+		
+		else:
+			# Если пользователь не подписан, предлагаем подписаться
+			await bot.send_message(callback_query.message.chat.id,
+			                       "Для использования этой команды, подпишитесь на наш канал." + CHANNEL_USERNAME)
+	
+	except Exception as e:
+		logging.error(f"An error occurred: {e}")
+		# При необходимости, уведомляем пользователя о проблеме
+		await bot.send_message(callback_query.message.chat.id,
+		                       "Извините, произошла ошибка. Мы работаем над решением проблемы.")
 
 
 if __name__ == '__main__':
